@@ -139,7 +139,6 @@ textarea { resize: vertical; min-height: 72px; }
 }
 .btn-success:active { transform: scale(0.98); }
 
-/* 刪除專用小按鈕 */
 .btn-delete {
   background: none; border: none; color: var(--danger);
   cursor: pointer; padding: 6px; border-radius: 6px;
@@ -187,6 +186,7 @@ textarea { resize: vertical; min-height: 72px; }
 .badge-out-貨款 { background: #fef3c7; color: #b45309; }
 .badge-out-雜支 { background: #fee2e2; color: #dc2626; }
 .badge-out-其他 { background: #e0e7ff; color: #4f46e5; }
+.badge-deleted { background: #cbd5e1; color: #64748b; text-decoration: line-through; }
 
 .stat-row {
   display: flex; justify-content: space-between; align-items: center;
@@ -319,7 +319,7 @@ textarea { resize: vertical; min-height: 72px; }
       </div>
       <div class="stat-row">
         <span style="font-size:14px;color:var(--color-text-secondary)">支出－其他</span>
-        <span style="font-size:15px;font-weight:bold;color:#4f46e5" id="sum-其他">$0</span>
+        <span style="font-size:15px;font-weight:bold;color:#4f46e5" id="sum-開銷">$0</span>
       </div>
       <div class="stat-row">
         <span style="font-size:14px;color:var(--color-text-secondary)">總支出</span>
@@ -451,8 +451,8 @@ textarea { resize: vertical; min-height: 72px; }
 
     <div class="card">
       <div class="card-title"><i class="ti ti-download"></i>手動報表備份</div>
-      <div style="font-size:13px;color:var(--color-text-secondary);margin-bottom:8px">
-        系統在完成晚上打烊（新制關卡 4）時會自動下載。如需提早存檔，可在下方手動選擇日期導出。
+      <div style="font-size:13px;color:var(--text-secondary);margin-bottom:8px">
+        系統在完成晚上打烊（關卡 4）時會自動下載。如需提早存檔，可在下方手動選擇日期導出。
       </div>
       <label style="margin-top:0">選擇欲導出之營運日期</label>
       <input type="date" id="export-date">
@@ -468,13 +468,14 @@ var currentType = 'in';
 var currentCat = '';
 var allEntries = [];
 var currentEntries = [];
+var deletedEntries = []; // 新增一個用來收集「已刪除項目」的陣列，避免對不上總帳
 var currentGate = 0;
 var prevBalance = 2000;
 var initialBalance = 2000;
 var handoverHistory = [];
 var baseLog = [];
 
-// 依老闆規格修正：精簡為4個核心關卡
+// 精簡為 4 大核心關卡
 var GATES = [
   {num:1, label:'晚班下班', desc:'結算當晚收支與交接金額'},
   {num:2, label:'隔天早班上班', desc:'確認收銀機現金與昨晚相符'},
@@ -487,7 +488,7 @@ document.getElementById('export-date').value = today.toISOString().slice(0,10);
 
 function switchTab(t) {
   var tabs = ['ledger','handover','settings'];
-  document.querySelectorAll('.tab-bar').forEach(function(b,i){ b.classList.toggle('active', tabs[i]===t); });
+  document.querySelectorAll('.tab-btn').forEach(function(b,i){ b.classList.toggle('active', tabs[i]===t); });
   document.querySelectorAll('.page').forEach(function(p){ p.classList.remove('active'); });
   document.getElementById('page-'+t).classList.add('active');
   if(t==='handover') renderGate();
@@ -528,8 +529,7 @@ function addEntry() {
   if(!person){ alert('請輸入經手人員'); return; }
   if(currentType==='out' && !currentCat){ alert('請選擇支出類別'); return; }
   
-  // 為每筆紀錄加上唯一的時間戳記作為 ID，方便刪除
-  var entry = {id: Date.now(), type:currentType, cat:currentType==='out'?currentCat:'', name:name, amt:amt, person:person, time:nowStr()};
+  var entry = {id: Date.now(), isDeleted: false, deletePerson: '', type:currentType, cat:currentType==='out'?currentCat:'', name:name, amt:amt, person:person, time:nowStr()};
   allEntries.push(entry);
   currentEntries.push(entry);
   document.getElementById('l-name').value = '';
@@ -538,21 +538,37 @@ function addEntry() {
   updateSystemCalc();
 }
 
-// 【全新功能】刪除輸錯的收支紀錄
+// 🌟【大升級：強制輸入誰刪除機制】
 function deleteEntry(id) {
-  if(!confirm('確認要刪除這筆紀錄嗎？（上方的統計與小計會自動扣除修正）')) return;
-  allEntries = allEntries.filter(function(e){ return e.id !== id; });
+  var target = allEntries.find(function(e){ return e.id === id; });
+  if(!target) return;
+  
+  if(!confirm('確認要刪除「' + target.name + '」這筆紀錄嗎？\n（刪除後系統會即時重新計算並留下填報紀錄）')) return;
+  
+  // 強制要求輸入是誰執行刪除
+  var dPerson = prompt('【🚨 安全權責稽核】請填入是「誰」執行刪除此項目（必填）：');
+  if(!dPerson || dPerson.trim() === "") {
+    alert('❌ 刪除失敗：必須填寫執行人員姓名，才能允許刪除！');
+    return;
+  }
+  
+  // 將其標記為已刪除，並塞入刪除人
+  target.isDeleted = true;
+  target.deletePerson = dPerson.trim();
+  
+  // 從當前計算有效佇列中過濾移除
   currentEntries = currentEntries.filter(function(e){ return e.id !== id; });
+  
   renderEntries();
   updateSystemCalc();
-  
-  // 連帶同步更新計算機的大水數值
-  calcCash();
+  calcCash(); // 同步重算計算機大水
+  alert('該筆項目已成功撤銷！已標註執行人：' + dPerson);
 }
 
 function getAllNet() {
   var inSum=0, outSum=0, g1=0, g2=0, g3=0;
   allEntries.forEach(function(e){
+    if(e.isDeleted) return; // 剔除被刪除項目
     if(e.type==='in') inSum+=e.amt;
     else { outSum+=e.amt; if(e.cat==='貨款') g1+=e.amt; else if(e.cat==='雜支') g2+=e.amt; else g3+=e.amt; }
   });
@@ -566,10 +582,12 @@ function getCurrentNet() {
 }
 
 function badgeClass(e) {
+  if(e.isDeleted) return 'badge-deleted';
   if(e.type==='in') return 'badge-in';
   return 'badge-out-' + (e.cat||'其他');
 }
 function badgeLabel(e) {
+  if(e.isDeleted) return '已刪除';
   if(e.type==='in') return '收入';
   return '支出・' + e.cat;
 }
@@ -580,23 +598,284 @@ function renderEntries() {
   document.getElementById('sum-base').textContent = fmt(initialBalance);
   document.getElementById('summary-card').style.display = allEntries.length ? '' : 'none';
   if(!allEntries.length){
-    list.innerHTML = '<div class="empty-state"><i class="ti ti-notes" style="font-size:36px;display:block;margin:0 auto 8px"></i>尚無紀錄，請新增第一筆</div>';
+    list.innerHTML = '<div class="empty-state"><i class="ti ti-notes" style="font-size:36px;display:block;margin:0 auto 8px"></i>尚無紀錄</div>';
     cnt.textContent = ''; return;
   }
-  cnt.textContent = allEntries.length + '筆';
+  
+  // 計算有效非刪除件數
+  var activeCount = allEntries.filter(function(e){return !e.isDeleted;}).length;
+  cnt.textContent = activeCount + '筆有效';
+  
   var n = getAllNet();
   document.getElementById('sum-in').textContent = fmt(n.inSum);
   document.getElementById('sum-out').textContent = fmt(n.outSum);
   document.getElementById('sum-貨款').textContent = fmt(n.貨款);
   document.getElementById('sum-雜支').textContent = fmt(n.雜支);
-  document.getElementById('sum-其他').textContent = fmt(n.開銷||n.其他);
+  document.getElementById('sum-開銷').textContent = fmt(n.其他);
   var net = n.inSum - n.outSum;
   var el = document.getElementById('sum-net');
   el.textContent = (net>=0?'+':'') + fmt(net);
   el.style.color = net>=0 ? 'var(--success)' : 'var(--danger)';
   
-  // 渲染時加入 🗑️ 刪除按鈕
   list.innerHTML = allEntries.slice().reverse().map(function(e){
+    if(e.isDeleted) {
+      // 渲染被刪除的暗色灰字條目
+      return '<div class="entry-row" style="opacity:0.5; background:#f8fafc; border-radius:6px; padding:8px 4px;">' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:14px;font-weight:bold;text-decoration:line-through;color:var(--color-text-tertiary);">' + e.name + '</div>' +
+          '<div style="font-size:11px;color:var(--color-text-tertiary);margin-top:2px;">[已撤銷] 刪除人: ' + e.deletePerson + '</div>' +
+        '</div>' +
+        '<span class="badge badge-deleted" style="margin-right:10px;">已撤銷</span>' +
+        '<span style="font-size:14px;font-weight:bold;text-decoration:line-through;color:var(--color-text-tertiary);min-width:64px;text-align:right">' +
+          fmt(e.amt) +
+        '</span></div>';
+    }
+    
+    // 正常有效項目渲染
     return '<div class="entry-row">' +
       '<div style="flex:1;min-width:0">' +
-        '<div style="font-size:15px;font-weight:bold;white-space
+        '<div style="font-size:15px;font-weight:bold;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; color:#1e293b;">' + e.name + '</div>' +
+        '<div style="font-size:12px;color:var(--color-text-tertiary);margin-top:2px">' + e.time + ' · ' + e.person + '</div>' +
+      '</div>' +
+      '<span class="badge ' + badgeClass(e) + '" style="margin-right:10px;">' + badgeLabel(e) + '</span>' +
+      '<span style="font-size:15px;font-weight:bold;color:' + (e.type==='in'?'var(--success)':'var(--danger)') + ';min-width:64px;text-align:right; margin-right:8px;">' +
+        (e.type==='in'?'+':'-') + fmt(e.amt) +
+      '</span>' +
+      '<button class="btn-delete" onclick="deleteEntry(' + e.id + ')" title="刪除此筆">' +
+        '<i class="ti ti-trash"></i>' +
+      '</button></div>';
+  }).join('');
+}
+
+function renderGate() {
+  var g = GATES[currentGate];
+  document.getElementById('gate-display').innerHTML =
+    '<div class="gate-pill">關卡 ' + g.num + ' / 4</div>' +
+    '<div style="font-size:18px;font-weight:bold;margin:6px 0 4px; color:#1e293b;">' + g.label + '</div>' +
+    '<div style="font-size:14px;color:var(--color-text-secondary); font-weight:500;">' + g.desc + '</div>';
+  document.getElementById('special-g5').style.display = currentGate===2 ? '' : 'none'; // 早班下班觸發雙人提示
+  document.getElementById('g6-extra').style.display = currentGate===3 ? '' : 'none'; // 店長結帳專用
+  updateSystemCalc();
+}
+
+function prevGate(){ if(currentGate>0){ currentGate--; renderGate(); resetCash(); } }
+function nextGate(){ if(currentGate<3){ currentGate++; renderGate(); resetCash(); } }
+
+function resetCash() {
+  ['c1000','c500','c100','c50','c10','c5','c1'].forEach(function(id){ document.getElementById(id).value=''; });
+  document.getElementById('cash-total').textContent = '$0';
+  document.getElementById('diff-section').innerHTML = '';
+  document.getElementById('diff-note').style.display = 'none';
+}
+
+function calcCash() {
+  var vals = {c1000:1000,c500:500,c100:100,c50:50,c10:10,c5:5,c1:1};
+  var total = 0;
+  Object.keys(vals).forEach(function(id){ total += (parseInt(document.getElementById(id).value)||0) * vals[id]; });
+  document.getElementById('cash-total').textContent = fmt(total);
+  updateDiff(total);
+}
+
+function updateSystemCalc() {
+  var n = getCurrentNet();
+  var expected = prevBalance + n.net;
+  document.getElementById('sc-prev').textContent = fmt(prevBalance);
+  document.getElementById('sc-in').textContent = '+' + fmt(n.inSum);
+  document.getElementById('sc-out').textContent = '-' + fmt(n.outSum);
+  document.getElementById('sc-expected').textContent = fmt(expected);
+}
+
+function updateDiff(actual) {
+  var n = getCurrentNet();
+  var expected = prevBalance + n.net;
+  var diff = actual - expected;
+  var sec = document.getElementById('diff-section');
+  var note = document.getElementById('diff-note');
+  if(diff===0){
+    sec.innerHTML = '<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:var(--border-radius-md);padding:12px;margin-top:10px;text-align:center;font-size:14px;color:var(--success);font-weight:bold;"><i class="ti ti-circle-check" style="font-size:20px;vertical-align:-4px;margin-right:6px"></i>現金完全相符，無大水差異</div>';
+    note.style.display = 'none';
+  } else {
+    var surplus = diff > 0;
+    sec.innerHTML = '<div class="' + (surplus?'warn-box':'err-box') + '">' +
+      '<div style="font-size:14px;font-weight:bold;color:' + (surplus?'#ca8a04':'var(--danger)') + ';margin-bottom:6px;display:flex;align-items:center;gap:6px">' +
+        '<i class="ti ti-alert-triangle" style="font-size:20px"></i>' + (surplus?'⚠️ 系統盤盈警告':'⚠️ 系統盤損警告') +
+      '</div>' +
+      '<div style="font-size:14px;color:var(--dark);font-weight:500;">實際現場清點現金' + (surplus?'多出':'少了') +
+        ' <strong class="diff-error">' + fmt(Math.abs(diff)) + '</strong> 元，與系統帳面預估不符，請於下方填寫原因。</div>' +
+    '</div>';
+    note.style.display = '';
+  }
+}
+
+function calcG6() {
+  var base = parseInt(document.getElementById('g6-base').value) || 0;
+  var res = document.getElementById('g6-result');
+  if(base>0){ res.style.display=''; document.getElementById('g6-base-val').textContent=fmt(base); }
+  else res.style.display = 'none';
+}
+
+function confirmHandover() {
+  var person = document.getElementById('h-person').value.trim();
+  if(!person){ alert('請輸入交接人員姓名'); return; }
+  if(document.getElementById('diff-note').style.display!=='none' && !document.getElementById('diff-reason').value.trim()){
+    alert('偵測到大水差額，請務必填寫差額原因備註說明！'); return;
+  }
+  var g = GATES[currentGate];
+  var cashTotal = document.getElementById('cash-total').textContent;
+  var expected = document.getElementById('sc-expected').textContent;
+  var note = document.getElementById('diff-reason').value.trim();
+  handoverHistory.unshift({gate:g.num, label:g.label, person:person, cashTotal:cashTotal, expected:expected, time:nowStr(), note:note});
+  var actual = parseInt(cashTotal.replace(/[$,$,]/g,'')) || 0;
+  var isGate6 = currentGate === 3; // 新制關卡 4 為終點結帳
+  var newBase = isGate6 ? (parseInt(document.getElementById('g6-base').value)||actual) : actual;
+  prevBalance = newBase;
+  document.getElementById('base-display').textContent = fmt(prevBalance);
+  currentEntries = [];
+  renderEntries(); renderHandoverHistory(); resetCash(); updateSystemCalc();
+  if(isGate6){
+    alert('🎉 關卡 4 打烊結帳完成！系統正在自動生成今日完整 CSV 財務報表…');
+    exportDaily(true);
+    setTimeout(function(){
+      initialBalance = newBase;
+      allEntries = []; currentEntries = []; handoverHistory = [];
+      currentGate = 0;
+      renderGate(); renderEntries(); updateSystemCalc(); renderHandoverHistory();
+    }, 600);
+  } else {
+    alert('關卡 ' + g.num + ' 交接完成！');
+    currentGate++;
+    renderGate();
+  }
+  document.getElementById('h-person').value = '';
+  document.getElementById('diff-reason').value = '';
+}
+
+function renderHandoverHistory() {
+  var card = document.getElementById('handover-history-card');
+  var list = document.getElementById('handover-history');
+  var cnt = document.getElementById('hh-count');
+  if(!handoverHistory.length){ card.style.display='none'; return; }
+  card.style.display = '';
+  cnt.textContent = handoverHistory.length + '筆';
+  list.innerHTML = handoverHistory.map(function(h){
+    return '<div style="padding:11px 0;border-bottom:1px solid #cbd5e1">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">' +
+        '<span style="font-size:12px;background:#eff6ff;color:var(--primary);border:1px solid #bfdbfe;padding:2px 8px;border-radius:20px;font-weight:bold">關卡 ' + h.gate + '</span>' +
+        '<span style="font-size:12px;color:var(--color-text-tertiary)">' + h.time + '</span>' +
+      '</div>' +
+      '<div style="font-size:15px;font-weight:bold; color:var(--dark);">' + h.label + '</div>' +
+      '<div style="font-size:12px;color:var(--color-text-secondary);margin-top:2px; font-weight:500;">經手：<span style="color:var(--dark)">' + h.person + '</span> · 實點：<span class="diff-ok">' + h.cashTotal + '</span> · 應有：' + h.expected + '</div>' +
+      (h.note ? '<div style="font-size:12px;color:#854f0b;margin-top:4px;background:#fffbeb;border:1px dashed #fef3c7;padding:6px 8px;border-radius:6px;font-weight:bold;">⚠️ 差額說明：' + h.note + '</div>' : '') +
+    '</div>';
+  }).join('');
+}
+
+function saveBase() {
+  var val = parseInt(document.getElementById('new-base').value) || 0;
+  var reason = document.getElementById('base-reason').value.trim();
+  var person = document.getElementById('base-person').value.trim();
+  if(!val){ alert('請輸入底金金額'); return; }
+  if(!person){ alert('請輸入店長姓名'); return; }
+  prevBalance = val; initialBalance = val;
+  document.getElementById('base-display').textContent = fmt(val);
+  document.getElementById('sum-base').textContent = fmt(val);
+  baseLog.unshift({val:val, reason:reason||'店長手動調整', person:person, time:nowStr()});
+  renderBaseLog(); updateSystemCalc();
+  document.getElementById('new-base').value = '';
+  document.getElementById('base-reason').value = '';
+  document.getElementById('base-person').value = '';
+  alert('底金基準值已成功修正為 ' + fmt(val));
+}
+
+function renderBaseLog() {
+  var card = document.getElementById('base-log-card');
+  var log = document.getElementById('base-log');
+  if(!baseLog.length){ card.style.display='none'; return; }
+  card.style.display = '';
+  log.innerHTML = baseLog.map(function(b){
+    return '<div style="padding:10px 0;border-bottom:1px solid #cbd5e1">' +
+      '<div style="display:flex;justify-content:space-between">' +
+        '<span style="font-size:16px;font-weight:bold;color:var(--primary)">' + fmt(b.val) + '</span>' +
+        '<span style="font-size:12px;color:var(--color-text-tertiary)">' + b.time + '</span>' +
+      '</div>' +
+      '<div style="font-size:12px;color:var(--color-text-secondary);margin-top:2px;font-weight:500;">執行主管：' + b.person + ' · 修正原因：' + b.reason + '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function csvEsc(v) { return '"' + String(v===undefined||v===null?'':v).replace(/"/g,'""') + '"'; }
+function csvRow(arr) { return arr.map(csvEsc).join(','); }
+
+function exportDaily(auto) {
+  var dateVal = document.getElementById('export-date').value || today.toISOString().slice(0,10);
+  var lines = [];
+  lines.push(csvRow(['🪐 星球基地 現金交接日報報表','日期：'+dateVal,'','','','','']));
+  lines.push(csvRow(['','','','','','','']));
+
+  lines.push(csvRow(['【當日初始底金基準】','','','','','','']));
+  lines.push(csvRow(['項目','金額','變更說明/註記','','','','']));
+  lines.push(csvRow(['當日起始開門底金', initialBalance, '收銀機預放設定金額','','','','']));
+  if(baseLog.length) baseLog.forEach(function(b){
+    lines.push(csvRow(['店長強制校正底金', b.val, b.reason+' ('+b.person+' '+b.time+')','','','','']));
+  });
+  lines.push(csvRow(['','','','','','','']));
+
+  lines.push(csvRow(['【本班次現金收支細項明細】','','','','','','']));
+  lines.push(csvRow(['時間','流水類型','收支類別','項目摘要名稱','交易金額（元）','經手填報人員/撤銷註記','']));
+  if(allEntries.length){
+    allEntries.forEach(function(e){
+      if(e.isDeleted) {
+        // 在 CSV 中確實反映被刪除的流向，方便月計查帳
+        lines.push(csvRow([e.time, '【⚠️已撤銷項目】', e.cat||'－', e.name, 0, '執行刪除人: ' + e.deletePerson]));
+      } else {
+        lines.push(csvRow([e.time, e.type==='in'?'收入':'支出', e.cat||'－', e.name, e.amt, e.person]));
+      }
+    });
+  } else {
+    lines.push(csvRow(['（本統計週期內無任何收支明細紀錄）','','','','','','']));
+  }
+  lines.push(csvRow(['','','','','','','']));
+
+  var n = getAllNet();
+  lines.push(csvRow(['【今日財務加總統計】','','','','','','']));
+  lines.push(csvRow(['項目名稱','統計總額（元）','','','','','']));
+  lines.push(csvRow(['當日營業總收入合計', n.inSum,'','','','','']));
+  lines.push(csvRow(['支出－現場貨款金額', n.貨款,'','','','','']));
+  lines.push(csvRow(['支出－場館雜支金額', n.雜支,'','','','','']));
+  lines.push(csvRow(['支出－其餘項目金額', n.開銷||n.其他,'','','','','']));
+  lines.push(csvRow(['當日支出總金額累計', n.outSum,'','','','','']));
+  lines.push(csvRow(['純利淨額', n.inSum-n.outSum,'','','','','']));
+  lines.push(csvRow(['後台預估收銀機應存留現金', initialBalance+(n.inSum-n.outSum), '（公式算法：底金基準＋淨額）','','','','']));
+  lines.push(csvRow(['','','','','','','']));
+
+  lines.push(csvRow(['【各班別盲測交接核對歷史】','','','','','','']));
+  lines.push(csvRow(['填報時間','系統關卡','班次項目說明','核對人員','現場實清點金額','系統帳面應有金額','大水差額備註說明']));
+  if(handoverHistory.length){
+    handoverHistory.slice().reverse().forEach(function(h){
+      lines.push(csvRow([h.time,'關卡 '+h.gate, h.label, h.person, h.cashTotal, h.expected, h.note||'無大水誤差，數值完全吻合']));
+    });
+  } else {
+    lines.push(csvRow(['（暫無任何關卡交接紀錄）','','','','','','']));
+  }
+
+  var bom = '\uFEFF';
+  var csv = bom + lines.join('\n');
+  var blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = '星球基地_現金移交日報_' + dateVal + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// 初始化
+renderGate();
+renderEntries();
+updateSystemCalc();
+document.getElementById('base-display').textContent = fmt(prevBalance);
+</script>
+</body>
+</html>
